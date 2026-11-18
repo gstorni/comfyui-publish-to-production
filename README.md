@@ -14,7 +14,7 @@ Licence: GPL-3.0-or-later, see `LICENSE`.
 4. Sign in once: `python signin.py` in this folder (or just run the node with Publish on: it opens the browser the same way).
    Approve in the browser, choosing the production. The credential is saved in `token.json` in that config folder, mode 0600, and
    is never part of the workflow or the log. `python signin.py --logout` removes it (also revoke it in your account page).
-5. Restart ComfyUI so the shot list fills (it lists the shots assigned to you that are waiting for a version).
+5. Restart ComfyUI once so the node loads (it lists the shots assigned to you that are waiting for a version). After that, new shots and notes need no restart: use **Refresh shots** (see Use).
 
 ## Use
 
@@ -23,6 +23,7 @@ second version), and switch **publish** on. It starts off: nothing is sent until
 seed is set to randomize (the recipe stores the seed that was drawn, but a re-run would differ). Running the same graph with the
 same frames again is a retry: you get the same version back, nothing is duplicated.
 A shot a reviewer sent back is named in the shot input's tooltip ("changes requested", with the version); its note is logged when ComfyUI starts and shown in the node's status when publish is off. The list entries themselves never change.
+The node face shows the note for the picked shot in a read-only box ("Changes requested on v004: ...", "No version yet" or "Ready"). **Refresh shots** re-reads your queue and the reviewers' notes without restarting ComfyUI: your current selection is kept, and if it is no longer in the queue it stays selected and is flagged as missing (the run then refuses it; pick another). Only shot codes and note text reach the browser, never your credential.
 
 Connect either IMAGE frames or a VIDEO (the purple wire from an image-to-video node), not both. A video brings its own frame rate
 and its audio, which goes into the MP4; the **fps** widget only applies to images.

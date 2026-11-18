@@ -506,3 +506,87 @@ def test_ffmpeg_failure_text_stays_in_the_log(tmp_path, monkeypatch):
     with pytest.raises(encode.EncodeRefused) as e:
         encode.encode_mp4(encode.frames_of(imgs()), 24.0, tmp_path / "x.mp4")
     assert "0x5f" not in str(e.value) and "ComfyUI log" in str(e.value)
+
+
+# --- 0.4.0: node-face note + refresh route payload (publish_core.queue_api) ---
+def _sign_in(fake, monkeypatch):
+    monkeypatch.setenv("PRODUCTION_SERVER", fake.url)
+    tokenstore.save(fake.url, TOKEN)
+
+
+def test_queue_payload_shape_notes_and_no_credential(fake, monkeypatch):
+    from publish_core import queue_api
+    _back(fake)
+    _sign_in(fake, monkeypatch)
+    out = queue_api.read_queue()
+    assert [s["value"] for s in out["shots"]] == ["ZZAI_030 | generation", "SH010 | gen"]     # values unchanged: no label suffix
+    assert set(out["shots"][0]) == {"value", "label", "note", "state"}
+    first = out["shots"][0]
+    assert first["state"] == "changes_requested" and first["note"].startswith("Changes requested on v004: Too dark in the corner")
+    assert "<" not in first["note"] and "\x1b" not in first["note"] and "\n" not in first["note"]
+    assert out["shots"][1]["state"] == "ready" and out["shots"][1]["note"] == ""
+    assert TOKEN not in json.dumps(out)
+    fake.shots = [{"shotCode": "NEW1", "stage": "gen"}]
+    assert queue_api.read_queue()["shots"][0]["state"] == "no_version"
+
+
+def test_queue_placeholders_and_options_follow_in_place(fake, monkeypatch):
+    from publish_core import queue_api
+    assert queue_api.read_queue()["message"] == queue_api.SIGN_IN
+    _sign_in(fake, monkeypatch)
+    held = queue_api.OPTIONS
+    _back(fake)
+    queue_api.refresh()
+    assert queue_api.OPTIONS is held and held == ["ZZAI_030 | generation", "SH010 | gen"]
+    fake.shots = []
+    p = queue_api.refresh()
+    assert p["shots"] == [] and p["message"] == queue_api.EMPTY and held == [queue_api.EMPTY]
+
+
+def test_failed_refresh_keeps_last_good_list(fake, monkeypatch):
+    from publish_core import queue_api
+    _back(fake)
+    _sign_in(fake, monkeypatch)
+    queue_api.refresh()
+    good = list(queue_api.OPTIONS)
+    monkeypatch.setattr(publisher, "list_shots", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    out = queue_api.refresh(timeout=1)
+    assert out["message"] == queue_api.UNREACHABLE and [s["value"] for s in out["shots"]] == good
+    assert out["shots"][0]["note"].startswith("Changes requested on v004")
+    assert queue_api.OPTIONS == good
+
+
+def test_define_schema_makes_no_network_call(monkeypatch):
+    """ComfyUI calls define_schema on every validation: it must hand back the live list and never fetch."""
+    import importlib
+    import types
+    from publish_core import queue_api
+
+    class _In:
+        def __init__(self, id=None, **kw): self.id, self.options = id, kw.get("options")
+    io = types.SimpleNamespace(
+        ComfyNode=object, Schema=lambda **kw: types.SimpleNamespace(**kw), Hidden=types.SimpleNamespace(prompt=1, extra_pnginfo=2),
+        Image=types.SimpleNamespace(Input=_In), Video=types.SimpleNamespace(Input=_In), Combo=types.SimpleNamespace(Input=_In),
+        String=types.SimpleNamespace(Input=_In, Output=_In), Float=types.SimpleNamespace(Input=_In), Boolean=types.SimpleNamespace(Input=_In),
+        NodeOutput=object)
+    ca = types.ModuleType("comfy_api"); lat = types.ModuleType("comfy_api.latest")
+    lat.ComfyExtension, lat.io = object, io
+    monkeypatch.setitem(sys.modules, "comfy_api", ca); monkeypatch.setitem(sys.modules, "comfy_api.latest", lat)
+    sys.modules.pop("publish_core.node", None)
+    node = importlib.import_module("publish_core.node")
+    calls = []
+    monkeypatch.setattr(publisher, "list_shots", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(1))
+    schema = node.PublishToProduction.define_schema()
+    shot = [i for i in schema.inputs if i.id == "shot"][0]
+    assert shot.options is queue_api.OPTIONS and calls == []
+    sys.modules.pop("publish_core.node", None)
+
+
+def test_refresh_keeps_or_flags_selection():
+    """The JS rule, mirrored: a selection that left the queue stays in the list (shown missing), never swapped."""
+    import re
+    js = open(os.path.join(os.path.dirname(__file__), "..", "web", "publish_to_production.js")).read()
+    assert "values.push(current)" in js and "textContent" not in js.replace("textContent-equivalent", "")
+    assert "innerHTML" not in js and "serialize" in js
+    assert re.search(r"WEB_DIRECTORY\s*=\s*\"\./web\"", open(os.path.join(os.path.dirname(__file__), "..", "__init__.py")).read())

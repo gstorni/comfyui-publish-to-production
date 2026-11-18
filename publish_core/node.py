@@ -6,7 +6,7 @@ import logging
 
 from comfy_api.latest import ComfyExtension, io      # noqa: E402 — only present inside ComfyUI
 
-from . import config, encode, publisher, tokenstore
+from . import config, encode, publisher, queue_api, tokenstore
 from .encode import EncodeRefused
 from .http import ApiError
 
@@ -14,19 +14,29 @@ log = logging.getLogger("comfy_publish")
 
 
 def _shot_options():
-    """Filled when ComfyUI loads (and on a restart/refresh after signing in): my queue, 'CODE | stage'."""
-    server = config.optional_server_url()
-    token = tokenstore.load(server) if server else None
-    if server and token:
-        try:
-            shots = publisher.list_shots(server, token, timeout=5)      # never hold ComfyUI's start-up
-            for (code, stage) in publisher.NOTES:
-                log.info("%s %s: %s", code, stage, publisher.note_for(f"{code} | {stage}"))
-            return shots or ["(no shots waiting)"]
-        except Exception as e:  # noqa: BLE001
-            log.warning("could not read the shot list: %s", type(e).__name__)
-            return ["(server unreachable)"]
-    return ["(sign in first)"]
+    """The live options list, NO network: ComfyUI calls define_schema on every /object_info, validation and execution.
+    It is filled by comfy_entrypoint and by the refresh route, in place."""
+    return queue_api.OPTIONS
+
+
+def _initial_fill() -> None:
+    payload = queue_api.refresh(timeout=5)
+    for (code, stage) in publisher.NOTES:
+        log.info("%s %s: %s", code, stage, publisher.note_for(f"{code} | {stage}"))
+    if payload["message"]:
+        log.info("shot list: %s", payload["message"])
+
+
+def register_routes() -> None:
+    """GET /publish_to_production/queue: re-read the queue + notes; updates the list the combo validates against (in place)."""
+    from aiohttp import web
+    from server import PromptServer
+    import asyncio
+
+    @PromptServer.instance.routes.get("/publish_to_production/queue")
+    async def queue(request):                                  # noqa: ANN001
+        payload = await asyncio.get_running_loop().run_in_executor(None, lambda: queue_api.refresh(timeout=10))
+        return web.json_response(payload)
 
 
 def _shot_tooltip() -> str:
@@ -95,4 +105,13 @@ class PublishExtension(ComfyExtension):
 
 
 async def comfy_entrypoint() -> PublishExtension:
+    import asyncio
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, _initial_fill)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not fill the shot list: %s", type(e).__name__)
+    try:
+        register_routes()
+    except Exception as e:  # noqa: BLE001
+        log.warning("refresh route not registered: %s", type(e).__name__)
     return PublishExtension()

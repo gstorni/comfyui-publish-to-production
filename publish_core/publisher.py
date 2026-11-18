@@ -41,6 +41,7 @@ def parse_pick(pick: str):
     return code, stage
 
 
+STATES: dict = {}      # (shotCode, stage) -> "no_version" | "changes_requested" | "ready"; replaced with NOTES
 NOTES: dict = {}       # (shotCode, stage) -> (version number, sanitized note); replaced after each successful list read, dropped after a publish to it
 
 
@@ -69,6 +70,7 @@ def list_shots(server: str, token: str, timeout: float = 60) -> List[str]:
     out = request("GET", f"{server}/api/tools/shots", token=token, timeout=timeout)
     labels: List[str] = []
     notes: dict = {}
+    states: dict = {}
     for i in out.get("items", []):
         code, stage = i.get("shotCode"), i.get("stage")
         if not code or not stage:
@@ -76,9 +78,13 @@ def list_shots(server: str, token: str, timeout: float = 60) -> List[str]:
         latest = i.get("latestVersion") or {}
         if latest.get("reviewState") == "changes_requested" and isinstance(latest.get("number"), int):
             notes[(code, stage)] = (latest["number"], clean_note(i.get("directorNote")))
+        states[(code, stage)] = ("no_version" if not latest else
+                                 "changes_requested" if (code, stage) in notes else "ready")
         labels.append(f"{code} | {stage}")          # the option value never changes: a saved graph must still validate
     NOTES.clear()
     NOTES.update(notes)                            # swapped only after a good read
+    STATES.clear()
+    STATES.update(states)
     return labels
 
 

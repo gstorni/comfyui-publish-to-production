@@ -5,4 +5,6 @@ try:
 except ImportError:                  # no comfy_api: not running inside ComfyUI
     comfy_entrypoint = None
 
-__all__ = ["comfy_entrypoint"]
+WEB_DIRECTORY = "./web"              # the node-face extension (note view + refresh button); ComfyUI serves it at /extensions/<this folder>/
+
+__all__ = ["comfy_entrypoint", "WEB_DIRECTORY"]

@@ -40,6 +40,7 @@ def request(method: str, url: str, *, body: Any = None, raw: Optional[bytes] = N
             headers: Optional[Dict[str, str]] = None, timeout: float = 60) -> Any:
     config.check_url(url)
     h = dict(headers or {})
+    h.setdefault("User-Agent", config.USER_AGENT)
     data = raw
     if body is not None:
         data = json.dumps(body).encode()

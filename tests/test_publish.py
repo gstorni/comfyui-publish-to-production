@@ -271,3 +271,22 @@ def test_stale_token_tmp_is_replaced(home):
     os.chmod(stale, 0o666)
     tokenstore.save("https://x.example", TOKEN)
     assert stat.S_IMODE(tokenstore.path().stat().st_mode) == 0o600
+
+
+def test_requests_send_own_user_agent(monkeypatch):
+    # Cloudflare answers 403 / error 1010 to the default "Python-urllib" agent; every call must name the node instead.
+    from publish_core import http as h, config as c
+    seen = {}
+
+    class _R:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"{}"
+
+    def fake_open(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return _R()
+
+    monkeypatch.setattr(h._opener, "open", fake_open)
+    h.request("GET", "https://example.com/api/tools/shots", token="t")
+    assert seen["ua"] == c.USER_AGENT and seen["ua"].startswith("comfyui-publish-to-production/")

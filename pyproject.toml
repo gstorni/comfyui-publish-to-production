@@ -1,0 +1,15 @@
+[project]
+license = "GPL-3.0-or-later"
+name = "comfyui-publish-to-production"
+version = "0.1.0"
+description = "ComfyUI node that publishes a finished output to a production shot (publish only)."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/gstorni/comfyui-publish-to-production"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+pythonpath = ["."]

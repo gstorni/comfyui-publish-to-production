@@ -16,6 +16,7 @@ class Fake:
         self.reserved_bodies = []
         self.parts = {}
         self.start = None
+        self.shots = [{"shotCode": "SH010", "stage": "gen"}]
         self.fail_complete_once = False
         self.edge_dead = False
         self.parts_finished = False
@@ -53,7 +54,7 @@ class Fake:
                 if self.path == "/api/tools/shots":
                     if not self._auth():
                         return self._send(401, {"detail": "Invalid or expired tool credential"})
-                    return self._send(200, {"items": [{"shotCode": "SH010", "stage": "gen"}]})
+                    return self._send(200, {"items": fake.shots})
                 self._send(404, {})
 
             def do_PUT(self):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -40,9 +41,45 @@ def parse_pick(pick: str):
     return code, stage
 
 
+NOTES: dict = {}       # (shotCode, stage) -> (version number, sanitized note); replaced after each successful list read, dropped after a publish to it
+
+
+def clean_note(text, limit: int = 300) -> str:
+    """The reviewer's note is untrusted: a plain single-line string, control characters gone, no markup carried."""
+    s = "".join(" " if (c.isspace() or ord(c) < 32 or 0x7F <= ord(c) < 0xA0) else ("" if unicodedata.category(c) == "Cf" else c)
+                for c in str(text or ""))
+    s = " ".join(s.replace("<", "").replace(">", "").split())
+    return s if len(s) <= limit else s[:limit - 1] + "\u2026"
+
+
+def note_for(pick: str) -> str:
+    """'Changes requested on v004: <note>' for a picked shot that came back, else ''."""
+    try:
+        code, stage = parse_pick(pick)
+    except Refused:
+        return ""
+    hit = NOTES.get((code, stage))
+    if not hit:
+        return ""
+    ver, note = hit
+    return f"Changes requested on v{ver:03d}" + (f": {note}" if note else "")
+
+
 def list_shots(server: str, token: str, timeout: float = 60) -> List[str]:
     out = request("GET", f"{server}/api/tools/shots", token=token, timeout=timeout)
-    return [f"{i['shotCode']} | {i['stage']}" for i in out.get("items", []) if i.get("shotCode") and i.get("stage")]
+    labels: List[str] = []
+    notes: dict = {}
+    for i in out.get("items", []):
+        code, stage = i.get("shotCode"), i.get("stage")
+        if not code or not stage:
+            continue
+        latest = i.get("latestVersion") or {}
+        if latest.get("reviewState") == "changes_requested" and isinstance(latest.get("number"), int):
+            notes[(code, stage)] = (latest["number"], clean_note(i.get("directorNote")))
+        labels.append(f"{code} | {stage}")          # the option value never changes: a saved graph must still validate
+    NOTES.clear()
+    NOTES.update(notes)                            # swapped only after a good read
+    return labels
 
 
 def _sha256(path: Path) -> str:
@@ -147,7 +184,9 @@ def publish(*, server: str, token: Optional[str], pick: str, note: str, enabled:
     if w:
         warnings.append(w)
     if not enabled:
-        return Result(False, "Not published: the publish switch is off. Switch it on to publish this output.", warnings)
+        msg = "Not published: the publish switch is off. Switch it on to publish this output."
+        back = note_for(pick)
+        return Result(False, f"{msg}\n{back}" if back else msg, warnings)
     code, stage = parse_pick(pick)
     if not token:
         say("Not signed in: opening the browser to approve this tool.")
@@ -178,5 +217,6 @@ def publish(*, server: str, token: Optional[str], pick: str, note: str, enabled:
         if e.status == 401:
             raise Refused("The credential was refused (expired or revoked): sign in again") from None
         raise Refused(f"The server refused the publish: {e.detail}") from None
+    NOTES.pop((code, stage), None)                 # that note was about an older version
     return Result(True, f"Published as version {res['versionNumber']}; the encode is queued.", warnings, res["versionNumber"], vid,
                   bool(res.get("repeat")))

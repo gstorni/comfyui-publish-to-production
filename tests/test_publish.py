@@ -140,6 +140,52 @@ def test_list_shots(fake):
         publisher.list_shots(fake.url, "bad")
 
 
+def _back(fake, note="Too dark\nin the corner \x1b[31m<b>x</b>"):
+    fake.shots = [{"shotCode": "ZZAI_030", "stage": "generation", "directorNote": note,
+                   "latestVersion": {"number": 4, "reviewState": "changes_requested"}},
+                  {"shotCode": "SH010", "stage": "gen", "directorNote": None, "latestVersion": {"number": 1, "reviewState": "approved"}}]
+
+
+def test_returned_shot_label_parses_back(fake):
+    _back(fake)
+    labels = publisher.list_shots(fake.url, TOKEN)
+    assert labels == ["ZZAI_030 | generation", "SH010 | gen"]       # same options with or without a note
+    fake.shots = [{"shotCode": "ZZAI_030", "stage": "generation"}, {"shotCode": "SH010", "stage": "gen"}]
+    assert publisher.list_shots(fake.url, TOKEN) == labels
+    assert publisher.parse_pick(labels[0]) == ("ZZAI_030", "generation")
+    assert publisher.parse_pick("A | B | gen") == ("A | B", "gen")
+
+
+def test_publish_off_status_includes_clean_note(fake):
+    _back(fake)
+    pick = publisher.list_shots(fake.url, TOKEN)[0]
+    assert pick == "ZZAI_030 | generation"
+    r = run(fake, enabled=False, pick=pick)
+    assert not r.published
+    assert "Changes requested on v004: Too dark in the corner" in r.message
+    assert "\x1b" not in r.message and "<" not in r.message and r.message.count("\n") == 1
+
+
+def test_failed_read_keeps_notes_and_publish_drops_them(fake):
+    _back(fake)
+    publisher.list_shots(fake.url, TOKEN)
+    with pytest.raises(ApiError):
+        publisher.list_shots(fake.url, "bad")
+    assert "v004" in publisher.note_for("ZZAI_030 | generation")
+    r = run(fake, pick="ZZAI_030 | generation")
+    assert r.published
+    assert publisher.note_for("ZZAI_030 | generation") == ""
+
+
+def test_clean_note_drops_format_chars():
+    assert publisher.clean_note("a\u202eb\u200bc") == "abc"
+
+
+def test_no_note_keeps_today_label_and_status(fake):
+    assert publisher.list_shots(fake.url, TOKEN) == ["SH010 | gen"]
+    assert "Changes requested" not in run(fake, enabled=False).message
+
+
 def test_signin_flow_saves_0600_token(fake):
     def approve(url):                                   # the "browser": approve, which redirects to the tool's loopback listener
         s = fake.start

@@ -19,16 +19,28 @@ def _shot_options():
     token = tokenstore.load(server) if server else None
     if server and token:
         try:
-            return publisher.list_shots(server, token, timeout=5) or ["(no shots waiting)"]      # never hold ComfyUI's start-up
+            shots = publisher.list_shots(server, token, timeout=5)      # never hold ComfyUI's start-up
+            for (code, stage) in publisher.NOTES:
+                log.info("%s %s: %s", code, stage, publisher.note_for(f"{code} | {stage}"))
+            return shots or ["(no shots waiting)"]
         except Exception as e:  # noqa: BLE001
             log.warning("could not read the shot list: %s", type(e).__name__)
             return ["(server unreachable)"]
     return ["(sign in first)"]
 
 
+def _shot_tooltip() -> str:
+    tip = "A shot assigned to you that is waiting for a version."
+    back = [f"{c} v{v:03d}" for (c, _s), (v, _n) in publisher.NOTES.items()]
+    if back:
+        tip += " Waiting with changes requested: " + ", ".join(back[:5]) + " - run with publish off to read the note."
+    return tip
+
+
 class PublishToProduction(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
+        options = _shot_options()
         return io.Schema(
             node_id=config.NODE_ID,
             display_name=config.NODE_LABEL,
@@ -37,7 +49,7 @@ class PublishToProduction(io.ComfyNode):
             inputs=[
                 io.Image.Input("images", optional=True, tooltip="The frames to publish, encoded to one MP4 (needs ffmpeg). Connect images or a video."),
                 io.Video.Input("video", optional=True, tooltip="A video to publish: it brings its own frame rate and audio. Connect images or a video."),
-                io.Combo.Input("shot", options=_shot_options(), tooltip="A shot assigned to you that is waiting for a version."),
+                io.Combo.Input("shot", options=options, tooltip=_shot_tooltip()),
                 io.String.Input("note", multiline=True, default="", tooltip="Required from the second version."),
                 io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.001,
                                tooltip="Frame rate for images. A video brings its own."),

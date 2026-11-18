@@ -22,6 +22,7 @@ Add **Publish to production** (category `publish`) after your final image/video 
 second version), and switch **publish** on. It starts off: nothing is sent until you turn it on. The node warns when a sampler's
 seed is set to randomize (the recipe stores the seed that was drawn, but a re-run would differ). Running the same graph with the
 same frames again is a retry: you get the same version back, nothing is duplicated.
+A shot a reviewer sent back is named in the shot input's tooltip ("changes requested", with the version); its note is logged when ComfyUI starts and shown in the node's status when publish is off. The list entries themselves never change.
 
 Connect either IMAGE frames or a VIDEO (the purple wire from an image-to-video node), not both. A video brings its own frame rate
 and its audio, which goes into the MP4; the **fps** widget only applies to images.

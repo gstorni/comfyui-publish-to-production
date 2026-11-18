@@ -6,7 +6,7 @@ import logging
 
 from comfy_api.latest import ComfyExtension, io      # noqa: E402 — only present inside ComfyUI
 
-from . import config, publisher, tokenstore
+from . import config, encode, publisher, tokenstore
 from .encode import EncodeRefused
 from .http import ApiError
 
@@ -35,10 +35,12 @@ class PublishToProduction(io.ComfyNode):
             category="publish",
             description="Publishes what you made to a shot. Publish only: it edits nothing and generates nothing.",
             inputs=[
-                io.Image.Input("images", tooltip="The frames to publish, encoded to one MP4 (needs ffmpeg)."),
+                io.Image.Input("images", optional=True, tooltip="The frames to publish, encoded to one MP4 (needs ffmpeg). Connect images or a video."),
+                io.Video.Input("video", optional=True, tooltip="A video to publish: it brings its own frame rate and audio. Connect images or a video."),
                 io.Combo.Input("shot", options=_shot_options(), tooltip="A shot assigned to you that is waiting for a version."),
                 io.String.Input("note", multiline=True, default="", tooltip="Required from the second version."),
-                io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.001),
+                io.Float.Input("fps", default=24.0, min=1.0, max=240.0, step=0.001,
+                               tooltip="Frame rate for images. A video brings its own."),
                 io.Boolean.Input("publish", default=False, tooltip="Nothing is sent unless this is on."),
             ],
             outputs=[io.String.Output(display_name="status")],
@@ -47,11 +49,18 @@ class PublishToProduction(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, shot, note, fps, publish) -> io.NodeOutput:
+    def execute(cls, shot, note, fps, publish, images=None, video=None) -> io.NodeOutput:
         try:
+            if images is None and video is None:
+                raise publisher.Refused("Connect images or a video")
+            if images is not None and video is not None:
+                raise publisher.Refused("Connect images or a video, not both")
+            audio = None
+            if video is not None:
+                images, fps, audio = encode.video_parts(video)
             server = config.server_url()
             res = publisher.publish(server=server, token=tokenstore.load(server), pick=shot, note=note, enabled=bool(publish),
-                                    images=images, fps=float(fps), api_graph=cls.hidden.prompt,
+                                    images=images, fps=fps if video is not None else float(fps), audio=audio, api_graph=cls.hidden.prompt,
                                     ui_graph=(cls.hidden.extra_pnginfo or {}).get("workflow"), say=log.info)
             lines = [res.message, *res.warnings]
         except (publisher.Refused, EncodeRefused, config.ConfigError, TimeoutError) as e:

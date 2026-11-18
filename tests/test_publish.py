@@ -298,3 +298,165 @@ def test_result_pages_are_static_and_complete():
     assert "Sign-in approved" in ok and "Sign-in not approved" in no
     for page in (ok, no):
         assert page.startswith("<!doctype html>") and "<script" not in page and "{" not in page.split("<style>")[0]
+
+
+# ---- video input and audio (v0.2.0)
+from fractions import Fraction
+import subprocess
+import sys
+import types
+
+
+def sine(sr=16000, secs=0.2, ch=1, freq=440.0):
+    t = np.arange(int(sr * secs)) / sr
+    w = np.tile(np.sin(2 * np.pi * freq * t).astype(np.float32), (ch, 1))
+    return {"waveform": w[None], "sample_rate": sr}
+
+
+class FakeVideo:
+    def __init__(self, images, audio=None, rate=Fraction(16, 1)):
+        self._c = types.SimpleNamespace(images=images, audio=audio, frame_rate=rate)
+
+    def get_components(self):
+        return self._c
+
+
+def test_video_parts_reads_components():
+    images, fps, audio = encode.video_parts(FakeVideo(imgs(), sine(), Fraction(16, 1)))
+    assert fps == 16 and images.shape[0] == 2 and audio[0] == 16000 and audio[1].shape == (1, 3200)
+    assert encode.video_parts(FakeVideo(imgs()))[2] is None
+    for bad in (0, -1, float("nan"), float("inf")):
+        with pytest.raises(encode.EncodeRefused):
+            encode.video_parts(FakeVideo(imgs(), None, bad))
+    with pytest.raises(encode.EncodeRefused):
+        encode.video_parts(FakeVideo(imgs(), {"waveform": np.zeros((1, 1, 10), np.float32), "sample_rate": 100}))
+
+
+def test_audio_changes_the_key_and_none_keeps_it():
+    f = recipe.frames_digest(encode.frames_of(imgs()))
+    base = recipe.publish_key(API, f, "SH010", "gen")
+    assert recipe.with_audio(f, None) == f and recipe.publish_key(API, recipe.with_audio(f, None), "SH010", "gen") == base
+    a1 = encode.audio_digest(encode.audio_of(sine(freq=440.0)))
+    a2 = encode.audio_digest(encode.audio_of(sine(freq=880.0)))
+    k1, k2 = (recipe.publish_key(API, recipe.with_audio(f, a), "SH010", "gen") for a in (a1, a2))
+    assert len({base, k1, k2}) == 3
+
+
+def _capture(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, input=None, capture_output=None):
+        seen["cmd"] = cmd
+        seen["pcm"] = [c for c in cmd if c.endswith(".pcm")]
+        seen["pcm_existed"] = [os.path.exists(c) for c in seen["pcm"]]
+        open(cmd[-1], "wb").write(b"x")
+        return types.SimpleNamespace(returncode=0, stderr=b"")
+    monkeypatch.setattr(encode, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+def test_encode_command_with_and_without_audio(tmp_path, monkeypatch):
+    seen = _capture(monkeypatch)
+    frames = encode.frames_of(imgs())
+    encode.encode_mp4(frames, 24.0, tmp_path / "a.mp4", encode.audio_of(sine(ch=2)))
+    c = seen["cmd"]
+    assert c[c.index("-f", 10) + 1] == "f32le" and "aac" in c and "192k" in c and "-shortest" not in c
+    assert c[c.index("-ac") + 1] == "2" and c[c.index("-ar") + 1] == "16000"
+    assert seen["pcm_existed"] == [True] and not os.path.exists(seen["pcm"][0])      # temp file cleaned up
+    encode.encode_mp4(frames, 24.0, tmp_path / "b.mp4")
+    assert "aac" not in seen["cmd"] and "-map" in seen["cmd"] and seen["cmd"].count("-i") == 1
+
+
+def test_audio_temp_removed_on_failure(tmp_path, monkeypatch):
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        encode.encode_mp4(encode.frames_of(imgs()), 24.0, tmp_path / "a.mp4", encode.audio_of(sine()))
+    assert not list(tmp_path.glob("*.pcm"))
+
+
+@needs_ffmpeg
+def test_real_encode_has_audio_stream(tmp_path):
+    if not shutil_which("ffprobe"):
+        pytest.skip("ffprobe not installed")
+    out = encode.encode_mp4(encode.frames_of(imgs()), 16.0, tmp_path / "v.mp4", encode.audio_of(sine(ch=2)))
+    streams = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "csv=p=0", str(out)],
+                             capture_output=True, text=True).stdout
+    assert "audio" in streams and "aac" in streams and "video" in streams
+    assert not list(tmp_path.glob("*.pcm")) and not list(tmp_path.glob("*.part"))
+    out2 = encode.encode_mp4(encode.frames_of(imgs()), 16.0, tmp_path / "n.mp4")
+    assert "audio" not in subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(out2)],
+                                         capture_output=True, text=True).stdout
+
+
+def shutil_which(x):
+    import shutil
+    return shutil.which(x)
+
+
+def test_publish_with_audio_and_images_key_matches(fake, monkeypatch):
+    seen = _capture(monkeypatch)
+    r = publisher.publish(server=fake.url, token=TOKEN, pick="SH010 | gen", note="", enabled=True, images=imgs(), fps=16.0,
+                          audio=encode.audio_of(sine()), api_graph=API, ui_graph=UI)
+    assert r.published and "aac" in seen["cmd"] and "16" in seen["cmd"]
+    f = recipe.frames_digest(encode.frames_of(imgs()))
+    plain = recipe.publish_key(API, f, "SH010", "gen")
+    assert not (config.config_dir() / "cache" / f"{plain}.mp4").exists()      # the audio version is cached under a different key
+
+
+def _node_module(monkeypatch):
+    """node.py needs comfy_api; stub just enough to import it and run execute()."""
+    class Dummy:
+        def __getattr__(self, n):
+            return lambda *a, **k: None
+    class Node:
+        hidden = types.SimpleNamespace(prompt=API, extra_pnginfo={"workflow": UI})
+    io = types.SimpleNamespace(ComfyNode=Node, Schema=object, NodeOutput=lambda *a, **k: a)
+    mod = types.ModuleType("comfy_api.latest")
+    mod.ComfyExtension, mod.io = object, io
+    monkeypatch.setitem(sys.modules, "comfy_api", types.ModuleType("comfy_api"))
+    monkeypatch.setitem(sys.modules, "comfy_api.latest", mod)
+    sys.modules.pop("publish_core.node", None)
+    import publish_core.node as node
+    return node
+
+
+def test_node_refuses_none_and_both(monkeypatch):
+    node = _node_module(monkeypatch)
+    with pytest.raises(RuntimeError, match="Connect images or a video$"):
+        node.PublishToProduction.execute("SH010 | gen", "", 24.0, True)
+    with pytest.raises(RuntimeError, match="not both"):
+        node.PublishToProduction.execute("SH010 | gen", "", 24.0, True, images=imgs(), video=FakeVideo(imgs()))
+
+
+def test_node_video_fps_overrides_widget(monkeypatch):
+    node = _node_module(monkeypatch)
+    got = {}
+    monkeypatch.setattr(node.publisher, "publish", lambda **kw: got.update(kw) or publisher.Result(True, "ok", []))
+    monkeypatch.setattr(node.config, "server_url", lambda: "https://x.example")
+    monkeypatch.setattr(node.tokenstore, "load", lambda s: TOKEN)
+    node.PublishToProduction.execute("SH010 | gen", "", 24.0, True, video=FakeVideo(imgs(), sine(), Fraction(16, 1)))
+    assert got["fps"] == 16.0 and got["audio"][0] == 16000
+    node.PublishToProduction.execute("SH010 | gen", "", 30.0, True, images=imgs())
+    assert got["fps"] == 30.0 and got["audio"] is None
+
+
+def test_video_rate_bounds_exact_and_empty_audio(tmp_path, monkeypatch):
+    # review: a frame rate outside the widget's 1-240 is refused; NTSC stays exact; an empty audio batch is no audio
+    for bad in (Fraction(10**9, 1), Fraction(1, 10**6), 241):
+        with pytest.raises(encode.EncodeRefused):
+            encode.video_parts(FakeVideo(imgs(), None, bad))
+    _, fps, _ = encode.video_parts(FakeVideo(imgs(), None, Fraction(24000, 1001)))
+    assert fps == Fraction(24000, 1001) and encode._rate(fps) == "24000/1001" and encode._rate(23.976) == "23.976"
+    empty = {"waveform": np.zeros((0, 2, 100), np.float32), "sample_rate": 48000}
+    assert encode.video_parts(FakeVideo(imgs(), empty))[2] is None
+
+
+def test_ffmpeg_failure_text_stays_in_the_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(encode, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(encode.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=1, stderr=b"[mp4 @ 0x5f15e462dc40] internal detail"))
+    with pytest.raises(encode.EncodeRefused) as e:
+        encode.encode_mp4(encode.frames_of(imgs()), 24.0, tmp_path / "x.mp4")
+    assert "0x5f" not in str(e.value) and "ComfyUI log" in str(e.value)

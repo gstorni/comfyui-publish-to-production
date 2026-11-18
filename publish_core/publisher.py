@@ -140,8 +140,8 @@ def _reserve(server: str, token: str, body: dict, say: Callable[[str], None]):
     raise Refused("Could not reserve a version; try again later")
 
 
-def publish(*, server: str, token: Optional[str], pick: str, note: str, enabled: bool, images, fps: float, api_graph, ui_graph,
-            open_browser=None, say: Callable[[str], None] = print) -> Result:
+def publish(*, server: str, token: Optional[str], pick: str, note: str, enabled: bool, images, fps, api_graph, ui_graph,
+            audio=None, open_browser=None, say: Callable[[str], None] = print) -> Result:
     warnings: List[str] = []
     w = recipe.seed_warning(ui_graph)
     if w:
@@ -156,11 +156,12 @@ def publish(*, server: str, token: Optional[str], pick: str, note: str, enabled:
         if not token:
             raise Refused("Sign-in did not complete")
     frames = encode.frames_of(images)
-    key = recipe.publish_key(api_graph, recipe.frames_digest(frames), code, stage)
+    digest = recipe.with_audio(recipe.frames_digest(frames), encode.audio_digest(audio) if audio else None)
+    key = recipe.publish_key(api_graph, digest, code, stage)
     cached = config.config_dir() / "cache" / f"{key}.mp4"
     _prune(cached.parent)
     if not cached.exists():
-        encode.encode_mp4(frames, fps, cached)           # raises EncodeRefused (no ffmpeg) before anything is sent
+        encode.encode_mp4(frames, fps, cached, audio)         # raises EncodeRefused (no ffmpeg) before anything is sent
     size, checksum = cached.stat().st_size, _sha256(cached)
     body = {"shotCode": code, "stage": stage, "publishKey": key, "note": note.strip() or None,
             "recipe": recipe.build(api_graph, ui_graph, token), "size": size, "filename": "publish.mp4",

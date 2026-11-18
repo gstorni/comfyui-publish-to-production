@@ -23,6 +23,9 @@ second version), and switch **publish** on. It starts off: nothing is sent until
 seed is set to randomize (the recipe stores the seed that was drawn, but a re-run would differ). Running the same graph with the
 same frames again is a retry: you get the same version back, nothing is duplicated.
 
+Connect either IMAGE frames or a VIDEO (the purple wire from an image-to-video node), not both. A video brings its own frame rate
+and its audio, which goes into the MP4; the **fps** widget only applies to images.
+
 ## Develop
 
 `python3 -m pytest tools/comfy-publish -q` (needs `pytest` and `numpy`; ComfyUI is not needed, it is stubbed out).

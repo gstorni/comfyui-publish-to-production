@@ -67,3 +67,10 @@ def build(api_graph: Any, ui_graph: Any, token: Optional[str] = None) -> Dict[st
     if token and token.encode() in canonical(rec):
         raise ValueError("The credential was found inside the workflow; refusing to publish")
     return rec
+
+
+def with_audio(frames_digest_value: str, audio_digest_value: Optional[str]) -> str:
+    """The digest the key sees: unchanged without audio (existing retries stay stable), combined with the audio's otherwise."""
+    if not audio_digest_value:
+        return frames_digest_value
+    return hashlib.sha256(f"{frames_digest_value}|audio:{audio_digest_value}".encode()).hexdigest()

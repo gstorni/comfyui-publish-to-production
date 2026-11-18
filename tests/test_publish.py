@@ -290,3 +290,11 @@ def test_requests_send_own_user_agent(monkeypatch):
     monkeypatch.setattr(h._opener, "open", fake_open)
     h.request("GET", "https://example.com/api/tools/shots", token="t")
     assert seen["ua"] == c.USER_AGENT and seen["ua"].startswith("comfyui-publish-to-production/")
+
+
+def test_result_pages_are_static_and_complete():
+    from publish_core import signin as s
+    ok, no = s.result_page(True), s.result_page(False)
+    assert "Sign-in approved" in ok and "Sign-in not approved" in no
+    for page in (ok, no):
+        assert page.startswith("<!doctype html>") and "<script" not in page and "{" not in page.split("<style>")[0]

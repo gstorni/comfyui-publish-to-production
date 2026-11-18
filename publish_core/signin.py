@@ -32,6 +32,43 @@ def make_pkce() -> Dict[str, str]:
             "state": secrets.token_urlsafe(24), "nonce": secrets.token_urlsafe(24)}
 
 
+_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root{{--bg:#f4f2ee;--card:#fff;--ink:#1c1f24;--sub:#5c636e;--line:#e3e0d9;--accent:{accent};--tint:{tint}}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0d1015;--card:#151a21;--ink:#ece7db;--sub:#9aa3ae;--line:#252c36}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:var(--bg);
+color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}}
+main{{width:100%;max-width:420px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:36px 32px 28px;text-align:center}}
+.icon{{width:56px;height:56px;margin:0 auto 20px;border-radius:50%;background:var(--tint);display:flex;align-items:center;justify-content:center}}
+h1{{margin:0 0 8px;font-size:22px;font-weight:600;letter-spacing:-.01em}}
+p{{margin:0;color:var(--sub)}}
+.foot{{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--sub)}}
+</style></head>
+<body><main>
+<div class="icon" aria-hidden="true">{icon}</div>
+<h1>{title}</h1>
+<p>{text}</p>
+<div class="foot">{label} &middot; ComfyUI</div>
+</main></body></html>
+"""
+_OK_ICON = ('<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" '
+            'stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>')
+_NO_ICON = ('<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" '
+            'stroke-linecap="round" style="color:var(--accent)"><path d="M7 7l10 10M17 7L7 17"/></svg>')
+
+
+def result_page(ok: bool) -> str:
+    """The page the browser lands on after the approval screen. Static text only: nothing from the request is echoed."""
+    if ok:
+        return _PAGE.format(title="Sign-in approved", accent="#1f9d6b", tint="rgba(52,211,153,.16)", icon=_OK_ICON,
+                            text="Go back to ComfyUI: it finishes connecting there. You can close this tab.", label=config.NODE_LABEL)
+    return _PAGE.format(title="Sign-in not approved", accent="#d9483b", tint="rgba(244,87,77,.14)", icon=_NO_ICON,
+                        text="Nothing was connected. To try again, run the sign-in from ComfyUI.", label=config.NODE_LABEL)
+
+
 class _Listener(HTTPServer):
     result: Optional[Dict[str, str]] = None
 
@@ -51,12 +88,12 @@ def _handler(nonce: str, state: str):
                 return
             self.server.result = q                             # type: ignore[attr-defined]
             ok = "code" in q
-            body = (f"<html><body><p>{'Signed in. You can close this tab and go back to ComfyUI.' if ok else 'Sign-in was not approved.'}"
-                    "</p></body></html>").encode()
+            body = result_page(ok).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
             self.end_headers()
             self.wfile.write(body)
     return H

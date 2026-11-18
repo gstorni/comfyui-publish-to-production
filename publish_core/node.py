@@ -71,12 +71,23 @@ class PublishToProduction(io.ComfyNode):
         )
 
     @classmethod
+    def validate_inputs(cls, shot):
+        """Taking over validation of the combo: ComfyUI's red "value not available" for a saved shot that left the queue is
+        replaced by execute()'s plain sentence. Only `shot` is named (no **kwargs) so ComfyUI keeps its min/max checks on every other input. Only the shape is checked here (no network); execute() checks the queue."""
+        if not isinstance(shot, str) or not shot.rpartition(" | ")[0]:
+            return "Pick a shot from the list (sign in first if the list is empty)"
+        return True
+
+    @classmethod
     def execute(cls, shot, note, fps, publish, images=None, video=None) -> io.NodeOutput:
         try:
             if images is None and video is None:
                 raise publisher.Refused("Connect images or a video")
             if images is not None and video is not None:
                 raise publisher.Refused("Connect images or a video, not both")
+            if images is not None and not (encode.FPS_MIN <= float(fps) <= encode.FPS_MAX):      # NaN fails the comparison too
+                raise publisher.Refused(f"fps must be between {encode.FPS_MIN} and {encode.FPS_MAX}")
+            queue_api.require_in_queue(shot)
             audio = None
             if video is not None:
                 images, fps, audio = encode.video_parts(video)

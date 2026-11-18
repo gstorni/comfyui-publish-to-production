@@ -38,6 +38,9 @@ function setup(node) {
   const view = node.addDOMWidget("note_view", "customtext", el, { serialize: false, getMinHeight: () => 60 });
   view.serialize = false;
 
+  let readDone = false;                                // a read has completed at least once
+
+  // Keep equal to face_text() in publish_core/queue_api.py (tested there).
   function show() {
     const v = combo.value;
     const s = byValue[v];
@@ -48,8 +51,11 @@ function setup(node) {
       else text = "Ready";
     } else if (PLACEHOLDERS.includes(v)) {
       text = message || v;
-    } else if (Object.keys(byValue).length) {
-      text = "This shot is not in your queue any more (refresh shows the current list)";
+    } else if (message === "(sign in first)" || message === "(server unreachable)") {
+      text = message;
+    } else if (readDone) {
+      const code = String(v || "").split(" | ")[0];
+      text = Object.keys(byValue).length ? `${code} isn't waiting for a version (in review or approved)` : "No shots waiting for you";
     } else {
       text = "Press Refresh shots to read the queue";
     }
@@ -64,7 +70,10 @@ function setup(node) {
     return r;
   };
 
-  const btn = node.addWidget("button", "Refresh shots", null, async () => {
+  let busy = false;
+  async function refresh() {
+    if (busy) return;                                  // never overlapping fetches
+    busy = true;
     btn.label = "Refreshing...";
     try {
       const res = await api.fetchApi("/publish_to_production/queue");
@@ -72,6 +81,7 @@ function setup(node) {
       byValue = {};
       for (const s of data.shots || []) byValue[s.value] = s;
       message = data.message || "";
+      readDone = true;
       const values = (data.shots || []).map((s) => s.value);
       if (!values.length) values.push(message || "(no shots waiting)");
       const current = combo.value;
@@ -83,10 +93,24 @@ function setup(node) {
     } catch (e) {
       el.value = "Could not refresh the shots";
     } finally {
+      busy = false;
       btn.label = "Refresh shots";
     }
-  }, { serialize: false });
+  }
+  const btn = node.addWidget("button", "Refresh shots", null, refresh, { serialize: false });
   btn.serialize = false;
   show();
-  setTimeout(() => btn.callback(), 0);                 // read the queue once the graph has restored its saved shot
+  setTimeout(refresh, 0);                              // read the queue once the graph has restored its saved shot
+
+  // Auto-refresh: every 30 s while the tab is visible, and once when it becomes visible. One timer per node.
+  const tick = () => { if (document.visibilityState === "visible") refresh(); };
+  const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+  const timer = setInterval(tick, 30000);
+  document.addEventListener("visibilitychange", onVisible);
+  const onRemoved = node.onRemoved;
+  node.onRemoved = function () {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisible);
+    return onRemoved ? onRemoved.apply(this, arguments) : undefined;
+  };
 }

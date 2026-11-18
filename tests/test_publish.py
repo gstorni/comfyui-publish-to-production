@@ -7,7 +7,7 @@ import urllib.request
 import numpy as np
 import pytest
 
-from publish_core import config, encode, publisher, recipe, signin, tokenstore
+from publish_core import config, encode, publisher, queue_api, recipe, signin, tokenstore
 from publish_core.http import ApiError
 from tests.fake_server import TOKEN, Fake
 
@@ -482,6 +482,7 @@ def test_node_video_fps_overrides_widget(monkeypatch):
     monkeypatch.setattr(node.publisher, "publish", lambda **kw: got.update(kw) or publisher.Result(True, "ok", []))
     monkeypatch.setattr(node.config, "server_url", lambda: "https://x.example")
     monkeypatch.setattr(node.tokenstore, "load", lambda s: TOKEN)
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: {"shots": queue_api._shots_for(["SH010 | gen"]), "message": ""})
     node.PublishToProduction.execute("SH010 | gen", "", 24.0, True, video=FakeVideo(imgs(), sine(), Fraction(16, 1)))
     assert got["fps"] == 16.0 and got["audio"][0] == 16000
     node.PublishToProduction.execute("SH010 | gen", "", 30.0, True, images=imgs())
@@ -590,3 +591,77 @@ def test_refresh_keeps_or_flags_selection():
     assert "values.push(current)" in js and "textContent" not in js.replace("textContent-equivalent", "")
     assert "innerHTML" not in js and "serialize" in js
     assert re.search(r"WEB_DIRECTORY\s*=\s*\"\./web\"", open(os.path.join(os.path.dirname(__file__), "..", "__init__.py")).read())
+
+
+# --- 0.4.1: face text + stale saved shot refused by the node itself ---
+def test_face_text_decisions():
+    shots = queue_api._shots_for(["SH010 | gen"])
+    f = queue_api.face_text
+    assert f("SH010 | gen", shots, "", True) == "No version yet" or f("SH010 | gen", shots, "", True) == "Ready"
+    assert f("SH020 | gen", shots, "", True) == "SH020 isn't waiting for a version (in review or approved)"
+    assert f("SH020 | gen", [], queue_api.EMPTY, True) == "No shots waiting for you"
+    assert f("SH020 | gen", [], "", True) == "No shots waiting for you"
+    assert f("SH020 | gen", [], queue_api.SIGN_IN, True) == "(sign in first)"
+    assert f("SH020 | gen", [], queue_api.UNREACHABLE, True) == "(server unreachable)"
+    assert f("SH020 | gen", [], "", False) == "Press Refresh shots to read the queue"
+
+
+def test_stale_saved_shot_is_refused_by_the_node(monkeypatch):
+    node = _node_module(monkeypatch)
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: {"shots": queue_api._shots_for(["SH010 | gen"]), "message": ""})
+    sent = []
+    monkeypatch.setattr(node.publisher, "publish", lambda **kw: sent.append(kw))
+    with pytest.raises(RuntimeError, match=r"SH020 isn't waiting for a version \(in review or approved\)"):
+        node.PublishToProduction.execute("SH020 | gen", "", 24.0, True, images=imgs())
+    assert sent == []
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: {"shots": [], "message": queue_api.EMPTY})
+    with pytest.raises(RuntimeError, match="No shots waiting for you"):
+        node.PublishToProduction.execute("SH020 | gen", "", 24.0, True, images=imgs())
+    assert sent == []
+
+
+def test_validate_inputs_takes_over_the_combo_check(monkeypatch):
+    node = _node_module(monkeypatch)
+    assert node.PublishToProduction.validate_inputs("SH099 | gen") is True      # not in OPTIONS: no red ComfyUI error
+    assert node.PublishToProduction.validate_inputs("") != True
+    assert node.PublishToProduction.validate_inputs(None) != True
+
+
+def test_js_auto_refresh_shape():
+    js = open(os.path.join(os.path.dirname(__file__), "..", "web", "publish_to_production.js")).read()
+    assert "30000" in js and "visibilityState" in js and "onRemoved" in js and "clearInterval" in js and "if (busy) return" in js
+
+
+def test_validate_inputs_names_only_shot(monkeypatch):
+    import inspect
+    node = _node_module(monkeypatch)
+    sig = inspect.signature(node.PublishToProduction.validate_inputs)
+    assert list(sig.parameters) == ["shot"]
+    assert not any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+
+
+@pytest.mark.parametrize("fps", [0.0, float("nan"), 10000.0])
+def test_bad_fps_refused_before_queue_read_or_encode(monkeypatch, fps):
+    node = _node_module(monkeypatch)
+    touched = []
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: touched.append("q"))
+    monkeypatch.setattr(node.encode, "encode_mp4", lambda *a, **k: touched.append("e"))
+    monkeypatch.setattr(node.publisher, "publish", lambda **kw: touched.append("p"))
+    with pytest.raises(RuntimeError, match="fps must be between"):
+        node.PublishToProduction.execute("SH010 | gen", "", fps, True, images=imgs())
+    assert touched == []
+
+
+def test_unreachable_queue_refuses_but_sign_in_passes(monkeypatch):
+    node = _node_module(monkeypatch)
+    sent = []
+    monkeypatch.setattr(node.publisher, "publish", lambda **kw: sent.append(kw) or publisher.Result(True, "ok", []))
+    monkeypatch.setattr(node.config, "server_url", lambda: "https://x.example")
+    monkeypatch.setattr(node.tokenstore, "load", lambda s: TOKEN)
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: {"shots": [], "message": queue_api.UNREACHABLE})
+    with pytest.raises(RuntimeError, match="Can't reach the server to check your shots; try again"):
+        node.PublishToProduction.execute("SH010 | gen", "", 24.0, True, images=imgs())
+    assert sent == []
+    monkeypatch.setattr(queue_api, "read_queue", lambda timeout=5: {"shots": [], "message": queue_api.SIGN_IN})
+    node.PublishToProduction.execute("SH010 | gen", "", 24.0, True, images=imgs())
+    assert len(sent) == 1

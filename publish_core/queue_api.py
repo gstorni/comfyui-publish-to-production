@@ -29,6 +29,38 @@ def _shots_for(values) -> list:
     return shots
 
 
+def not_waiting_text(shot: str) -> str:
+    code, _, _stage = (shot or "").rpartition(" | ")
+    return f"{code or shot} isn't waiting for a version (in review or approved)"
+
+
+def face_text(value, shots, message, read_done) -> str:
+    """The note-box text for the picked value. Mirrored by show() in web/publish_to_production.js (keep them equal)."""
+    for s in shots:
+        if s["value"] == value:
+            return (s.get("note") or "Changes requested") if s["state"] == "changes_requested" else \
+                   "No version yet" if s["state"] == "no_version" else "Ready"
+    if value in _PLACEHOLDERS:
+        return message or value
+    if message in (SIGN_IN, UNREACHABLE):
+        return message
+    if read_done:
+        return "No shots waiting for you" if not shots else not_waiting_text(value)
+    return "Press Refresh shots to read the queue"
+
+
+def require_in_queue(shot: str, timeout: float = 10) -> None:
+    """Refuse (publisher.Refused) a shot that is not in the user's current queue, or when the queue cannot be read. This check is
+    the node's own: the server only checks assignment and that the stage is publishable. Sign-in passes (publish() signs in)."""
+    payload = read_queue(timeout)
+    if payload["message"] == SIGN_IN:
+        return
+    if payload["message"] == UNREACHABLE:
+        raise publisher.Refused("Can't reach the server to check your shots; try again")
+    if shot not in [s["value"] for s in payload["shots"]]:
+        raise publisher.Refused(not_waiting_text(shot) if payload["shots"] else "No shots waiting for you")
+
+
 def read_queue(timeout: float = 5) -> dict:
     """{"shots": [{value, label, note, state}], "message": "" | placeholder text}. Never raises, never carries a secret."""
     server = config.optional_server_url()

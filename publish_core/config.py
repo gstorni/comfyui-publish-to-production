@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 PRODUCT_NAME = "Production"          # the label users see ("Publish to production"); change it here only
 NODE_LABEL = f"Publish to {PRODUCT_NAME.lower()}"
 NODE_ID = "ComfyPublish_PublishToProduction"
-VERSION = "0.4.0"                  # keep equal to pyproject.toml
+VERSION = "0.4.1"                  # keep equal to pyproject.toml
 USER_AGENT = f"comfyui-publish-to-production/{VERSION}"  # Cloudflare refuses the default "Python-urllib" (error 1010)
 TOOL_ID = "comfy"                    # the tool name the server knows (tool_credentials.ALLOWED_TOOLS)
 ENV_SERVER = "PRODUCTION_SERVER"
